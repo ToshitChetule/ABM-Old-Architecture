@@ -1,0 +1,76 @@
+.modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #0006;
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-box {
+    background: #fff;
+    border-radius: 16px;
+    padding: 32px 40px;
+    min-width: 380px;
+    box-shadow: 0 8px 40px #0078d355;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-x {
+    background: none;
+    border: none;
+    font-size: 28px;
+    padding: 0 8px;
+    cursor: pointer;
+}
+
+.modal-body label {
+    display: block;
+    margin: 18px 0 10px;
+}
+
+.confbadge {
+    background: #d7f7e6;
+    color: #1d8146;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+.modal-footer {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.modal-flag {
+    background: #c9ccd3;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 8px;
+}
+
+.modal-reject {
+    background: #f85c55;
+    color: #fff;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 8px;
+}
+
+.modal-approve {
+    background: #1192e8;
+    color: #fff;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 8px;
+}

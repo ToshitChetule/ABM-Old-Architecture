@@ -1,0 +1,65 @@
+
+    .docreview-root {
+        background: #f6f8ff;
+        min-height: 100vh;
+        font-family: sans-serif;
+    }
+
+    .docreview-header {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding: 20px;
+    }
+
+    .docreview-logo {
+        width: 36px;
+        height: 36px;
+        background: #B2E0F7;
+        border-radius: 50%;
+    }
+
+    .docreview-user {
+        margin-left: auto;
+    }
+
+    .docreview-panel {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin: 60px auto;
+    }
+
+    .docreview-thumb {
+        font-size: 60px;
+        background: #e4ebf7;
+        border-radius: 12px;
+        width: 90px;
+        height: 90px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .docreview-meta {
+        margin-left: 36px;
+    }
+
+    .docreview-type {
+        display: inline-block;
+        color: #157fb2;
+        padding: 2px 7px;
+        margin-top: 2px;
+        font-weight: 700;
+        border-radius: 5px;
+    }
+
+    .docreview-proc {
+        margin-top: 18px;
+        padding: 15px 32px;
+        background: #0077c6;
+        color: #fff;
+        font-size: 17px;
+        border: none;
+        border-radius: 10px;
+    }

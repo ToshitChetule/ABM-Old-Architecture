@@ -1,0 +1,111 @@
+/* Modern File Uploader Styling */
+.upload-widget {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  padding: 40px;
+  width: 420px;
+  text-align: center;
+  color: #fff;
+  font-family: "Poppins", sans-serif;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.25);
+  transition: all 0.3s ease;
+  margin: 10px auto;
+  animation: fadeInUp 0.9s ease forwards;
+}
+
+.upload-widget:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(31, 38, 135, 0.35);
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Upload Icon */
+.upload-icon {
+  font-size: 56px;
+  color: #a1c4fd;
+  background: rgba(255, 255, 255, 0.06);
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  margin: 0 auto 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.04);
+  animation: float 3.5s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+/* Title & Description */
+.upload-title {
+  font-size: 1.2rem;
+  margin-bottom: 6px;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+  color: black;
+}
+
+.upload-desc {
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 18px;
+  color: black;
+
+}
+
+/* Buttons */
+.upload-widget button {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin: 6px;
+  font-size: 15px;
+  cursor: pointer;
+  transition: all 0.22s ease;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.upload-widget button:hover:not(:disabled) {
+  transform: translateY(-3px);
+  background: linear-gradient(135deg, #5a67d8, #805ad5);
+  box-shadow: 0 6px 16px rgba(118, 75, 162, 0.2);
+}
+
+.upload-widget button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.upload-widget button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Uploaded Filename */
+.upload-widget span {
+  display: inline-block;
+  margin-top: 12px;
+  font-size: 0.95rem;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 8px 14px;
+  border-radius: 8px;
+  color: #eaeefc;
+  letter-spacing: 0.2px;
+}
