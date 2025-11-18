@@ -58,7 +58,7 @@ class Neo4jBuilder:
     # --------------------------------------------------------------------------
     # 🔁 RENAME ATTRIBUTE (FULL FIX — VALUES PRESERVED)
     # --------------------------------------------------------------------------
-    # def rename_attribute(self, old_name, new_name):
+    def rename_attribute(self, old_name, new_name):
         """
         Safely renames an Attribute node while keeping all its HAS_VALUE links.
         Works even if new attribute already exists.
