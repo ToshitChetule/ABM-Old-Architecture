@@ -1,785 +1,785 @@
 
 
 
-from flask import Flask, request, jsonify, send_file
-import os
-from flask_cors import CORS
-import pandas as pd
-from variant_analysis import run_variant_analysis
-import json
-from datetime import datetime
+# from flask import Flask, request, jsonify, send_file
+# import os
+# from flask_cors import CORS
+# import pandas as pd
+# from variant_analysis import run_variant_analysis
+# import json
+# from datetime import datetime
 
-# 🧠 Imports
-from models.llama_excel import process_excel_row_with_llama
-from models.mistral_pdf import process_pdf_with_mistral_normalizer
-from graph.neo4j_builder import Neo4jBuilder
-from models.refine_graph import refine_with_graph_context
+# # 🧠 Imports
+# from models.llama_excel import process_excel_row_with_llama
+# from models.mistral_pdf import process_pdf_with_mistral_normalizer
+# from graph.neo4j_builder import Neo4jBuilder
+# from models.refine_graph import refine_with_graph_context
 
-# Rule engine (new)
-from models.rule_engine import generate_rules_from_sku_matrix, save_rules_to_json
+# # Rule engine (new)
+# from models.rule_engine import generate_rules_from_sku_matrix, save_rules_to_json
 
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
+# app = Flask(__name__)
+# CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# UPLOAD_FOLDER = "uploads"
+# os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "outputs"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# UPLOAD_DIR = "uploads"
+# OUTPUT_DIR = "outputs"
+# os.makedirs(UPLOAD_DIR, exist_ok=True)
+# os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# In-memory caches for last processed data
-LAST_SKU_MATRIX = None
-LAST_RULESET = None
+# # In-memory caches for last processed data
+# LAST_SKU_MATRIX = None
+# LAST_RULESET = None
 
 
-# 🧠 Domain Prompt Function (same as before)
-def get_domain_prompt(industry, product_type):
-    base_prompt = f"""
+# # 🧠 Domain Prompt Function (same as before)
+# def get_domain_prompt(industry, product_type):
+#     base_prompt = f"""
 
-ROLE
+# ROLE
 
-You are Synexa’s Senior Data Intelligence Assistant.
-You extract strict, normalized attribute–value pairs from Synexa SKU descriptions with zero hallucination.
-Your output populates sales, finance, and product systems.
-Every extracted attribute must be correct, normalized, and fully justified by the text.
+# You are Synexa’s Senior Data Intelligence Assistant.
+# You extract strict, normalized attribute–value pairs from Synexa SKU descriptions with zero hallucination.
+# Your output populates sales, finance, and product systems.
+# Every extracted attribute must be correct, normalized, and fully justified by the text.
 
 
-TASK
+# TASK
 
-Given a SKU description, extract all clearly present or strongly implied attributes.
-Output one attribute–value pair per line in the EXACT format:
-Attribute name: Value
+# Given a SKU description, extract all clearly present or strongly implied attributes.
+# Output one attribute–value pair per line in the EXACT format:
+# Attribute name: Value
 
 
 
-No quotes, no extra text, no blank lines.
-If an attribute cannot be determined with certainty, omit it.
+# No quotes, no extra text, no blank lines.
+# If an attribute cannot be determined with certainty, omit it.
 
-GLOBAL RULES
-1. Product family
-Always output:
-Product family: Synexa
+# GLOBAL RULES
+# 1. Product family
+# Always output:
+# Product family: Synexa
 
-2. Product name
-Normalize as:
-Contains "Synexa Fusion" → Synexa Fusion
-Contains "Synexa Cloud" or "Cloud Edition" → Synexa Cloud
-Contains "Nexus", "Nexus.Data", "Nexus.DT", "Synexa Nexus" → Synexa Nexus Data
+# 2. Product name
+# Normalize as:
+# Contains "Synexa Fusion" → Synexa Fusion
+# Contains "Synexa Cloud" or "Cloud Edition" → Synexa Cloud
+# Contains "Nexus", "Nexus.Data", "Nexus.DT", "Synexa Nexus" → Synexa Nexus Data
 
-3. Edition
-Normalize:
-Basic, Std → Standard
-Pro, Professional → Professional
-Enterprise, Advanced, ENT → Enterprise
-If multiple appear, choose highest tier (Enterprise > Professional > Standard).
+# 3. Edition
+# Normalize:
+# Basic, Std → Standard
+# Pro, Professional → Professional
+# Enterprise, Advanced, ENT → Enterprise
+# If multiple appear, choose highest tier (Enterprise > Professional > Standard).
 
-4. Component / Add-on
+# 4. Component / Add-on
 
-Contains “X-Engine”, “Xengine”, “with X”, “AI-Accelerated” →
-Component: X-Engine
+# Contains “X-Engine”, “Xengine”, “with X”, “AI-Accelerated” →
+# Component: X-Engine
 
-Contains “Orchestrator”, “with Orch”, “Orchestrator Module” →
-Add-on: Orchestrator
+# Contains “Orchestrator”, “with Orch”, “Orchestrator Module” →
+# Add-on: Orchestrator
 
-5. Metric quantity + Resource unit
+# 5. Metric quantity + Resource unit
 
-Detect the numeric quantity and unit:
+# Detect the numeric quantity and unit:
 
-Normalize units:
+# Normalize units:
 
-vCPU, Core, Virtual Processor Core → vCPU
+# vCPU, Core, Virtual Processor Core → vCPU
 
-User, Seat → User
+# User, Seat → User
 
-Instance, Server, Env → Instance
+# Instance, Server, Env → Instance
 
-VPC, vpc → VPC
+# VPC, vpc → VPC
 
-Output:
+# Output:
 
-Metric quantity: <number>
-Resource unit: <unit>
+# Metric quantity: <number>
+# Resource unit: <unit>
 
-6. Monetization model
+# 6. Monetization model
 
-Perpetual, Perp, Lic → Perpetual
+# Perpetual, Perp, Lic → Perpetual
 
-Subscription, Sub, Annual, 12 Mo, 36 Mo → Subscription
+# Subscription, Sub, Annual, 12 Mo, 36 Mo → Subscription
 
-7. Deployment method
+# 7. Deployment method
 
-Normalize as:
+# Normalize as:
 
-SaaS, Cloud → SaaS
+# SaaS, Cloud → SaaS
 
-SW, On-Prem, Customer Managed → On-premise
+# SW, On-Prem, Customer Managed → On-premise
 
-BYOC → BYOC (always overrides)
+# BYOC → BYOC (always overrides)
 
-Inference rules:
+# Inference rules:
 
-If unit = vCPU/Core → On-premise
+# If unit = vCPU/Core → On-premise
 
-If unit = User/Seat → SaaS
+# If unit = User/Seat → SaaS
 
-BYOC always overrides
+# BYOC always overrides
 
-8. License term
+# 8. License term
 
-Normalize:
+# Normalize:
 
-1 Mo → 1 Month
+# 1 Mo → 1 Month
 
-“12 Mo”, “12mo”, “1 Yr”, “Annual”, “Annum” → 12 Months
+# “12 Mo”, “12mo”, “1 Yr”, “Annual”, “Annum” → 12 Months
 
-“36 Mo”, “3 Yr” → 36 Months
+# “36 Mo”, “3 Yr” → 36 Months
 
-9. Product type
+# 9. Product type
 
-“SW S&S”, “Support and Subscription” → Support And Subscription
+# “SW S&S”, “Support and Subscription” → Support And Subscription
 
-“License”, “Lic” → License
+# “License”, “Lic” → License
 
-10. Environment type
+# 10. Environment type
 
-Production, PROD → Production
+# Production, PROD → Production
 
-Non-Prod, Non-Production, DEV → Non-production
+# Non-Prod, Non-Production, DEV → Non-production
 
-11. Support type
+# 11. Support type
 
-Standard Support, Std Spt → Standard
+# Standard Support, Std Spt → Standard
 
-Advanced Support, Adv Spt → Advanced
+# Advanced Support, Adv Spt → Advanced
 
-12. Hyperscaler
+# 12. Hyperscaler
 
-AWS, Azure, GCP → normalize as-is
+# AWS, Azure, GCP → normalize as-is
 
-13. Sales motion
+# 13. Sales motion
 
-Select one:
+# Select one:
 
-New, New Customer → New
+# New, New Customer → New
 
-Renewal, RNL → Renewal
+# Renewal, RNL → Renewal
 
-Upgrade, UPG → Upgrade
+# Upgrade, UPG → Upgrade
 
-OUTPUT ORDER (strict)
+# OUTPUT ORDER (strict)
 
-Always output in this exact order when applicable:
+# Always output in this exact order when applicable:
 
-Product family
+# Product family
 
-Product name
+# Product name
 
-Edition
+# Edition
 
-Component
+# Component
 
-Add-on
+# Add-on
 
-Metric quantity
+# Metric quantity
 
-Resource unit
+# Resource unit
 
-Monetization model
+# Monetization model
 
-Deployment method
+# Deployment method
 
-License term
+# License term
 
-Product type
+# Product type
 
-Environment type
+# Environment type
 
-Support type
+# Support type
 
-Hyperscaler
+# Hyperscaler
 
-Sales motion
+# Sales motion
 
-OUTPUT RULES
+# OUTPUT RULES
 
 
 
-No repeated attributes.
+# No repeated attributes.
 
-No attributes without evidence.
+# No attributes without evidence.
 
-Title Case values (except acronyms like SaaS, BYOC, vCPU).
+# Title Case values (except acronyms like SaaS, BYOC, vCPU).
 
-Exact attribute names (do not create new ones).
+# Exact attribute names (do not create new ones).
 
-Each line = one attribute–value pair.
+# Each line = one attribute–value pair.
 
-    ### CONTEXT
-    Industry: {industry if industry else "general"}
-    Product Type: {product_type if product_type else "unspecified"}
-    """
+#     ### CONTEXT
+#     Industry: {industry if industry else "general"}
+#     Product Type: {product_type if product_type else "unspecified"}
+#     """
 
-    domain_prompts = {
-        "automotive": """
-        Focus on vehicle specifications:
-        - Make, Model, Trim, Year
-        - Engine details, Power (HP), Torque (Nm), Transmission
-        - Fuel type, Tank capacity, Mileage
-        - Dimensions, Weight, Ground clearance
-        - Compatibility and Part number
-        """,
-        "pharmaceuticals": """
-        Focus on:
-        - Brand and Generic Name
-        - Strength (mg/ml)
-        - Dosage Form (Tablet, Capsule, Syrup)
-        - Ingredients, Packaging type, Quantity
-        - Manufacturer, Expiry date, Batch/Lot, Therapeutic category
-        """,
-        "electronics": """
-        Focus on:
-        - Brand, Model number, Series
-        - Power, Voltage, Frequency, Capacity (GB/TB)
-        - Battery, Display size, Resolution
-        - Connectivity (Wi-Fi, Bluetooth, HDMI)
-        - Warranty, Material, Weight, Dimensions
-        """,
-        "food_beverages": """
-        Focus on:
-        - Product name, Brand
-        - Ingredients, Nutritional values
-        - Net weight/volume, Flavor
-        - Packaging type/material, Shelf life
-        - Manufacturer, Country of origin
-        """,
-        "chemical": """
-        Focus on:
-        - Chemical name, Formula, Purity, CAS number
-        - Physical form, Molecular weight, Boiling/Melting point
-        - Applications, Packaging, Safety classification
-        """
-    }
+#     domain_prompts = {
+#         "automotive": """
+#         Focus on vehicle specifications:
+#         - Make, Model, Trim, Year
+#         - Engine details, Power (HP), Torque (Nm), Transmission
+#         - Fuel type, Tank capacity, Mileage
+#         - Dimensions, Weight, Ground clearance
+#         - Compatibility and Part number
+#         """,
+#         "pharmaceuticals": """
+#         Focus on:
+#         - Brand and Generic Name
+#         - Strength (mg/ml)
+#         - Dosage Form (Tablet, Capsule, Syrup)
+#         - Ingredients, Packaging type, Quantity
+#         - Manufacturer, Expiry date, Batch/Lot, Therapeutic category
+#         """,
+#         "electronics": """
+#         Focus on:
+#         - Brand, Model number, Series
+#         - Power, Voltage, Frequency, Capacity (GB/TB)
+#         - Battery, Display size, Resolution
+#         - Connectivity (Wi-Fi, Bluetooth, HDMI)
+#         - Warranty, Material, Weight, Dimensions
+#         """,
+#         "food_beverages": """
+#         Focus on:
+#         - Product name, Brand
+#         - Ingredients, Nutritional values
+#         - Net weight/volume, Flavor
+#         - Packaging type/material, Shelf life
+#         - Manufacturer, Country of origin
+#         """,
+#         "chemical": """
+#         Focus on:
+#         - Chemical name, Formula, Purity, CAS number
+#         - Physical form, Molecular weight, Boiling/Melting point
+#         - Applications, Packaging, Safety classification
+#         """
+#     }
 
-    if industry and industry.lower() in domain_prompts:
-        base_prompt += domain_prompts[industry.lower()]
-    else:
-        base_prompt += "\nExtract all relevant descriptive and technical attributes clearly."
+#     if industry and industry.lower() in domain_prompts:
+#         base_prompt += domain_prompts[industry.lower()]
+#     else:
+#         base_prompt += "\nExtract all relevant descriptive and technical attributes clearly."
 
-    return base_prompt
+#     return base_prompt
 
 
-# 🧾 Main File Processing Endpoint
-@app.route("/process", methods=["POST"])
-def process_file():
-    """Handles Excel or PDF upload and returns both SKU-level and aggregated data."""
-    global LAST_SKU_MATRIX, LAST_RULESET
+# # 🧾 Main File Processing Endpoint
+# @app.route("/process", methods=["POST"])
+# def process_file():
+#     """Handles Excel or PDF upload and returns both SKU-level and aggregated data."""
+#     global LAST_SKU_MATRIX, LAST_RULESET
 
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+#     if "file" not in request.files:
+#         return jsonify({"error": "No file uploaded"}), 400
 
-    file = request.files["file"]
-    filename = file.filename
-    if not filename:
-        return jsonify({"error": "Invalid filename"}), 400
+#     file = request.files["file"]
+#     filename = file.filename
+#     if not filename:
+#         return jsonify({"error": "Invalid filename"}), 400
 
-    # Extract user context
-    industry = request.form.get("industry", "general")
-    product_type = request.form.get("productType", "")
-    domain_prompt = get_domain_prompt(industry, product_type)
+#     # Extract user context
+#     industry = request.form.get("industry", "general")
+#     product_type = request.form.get("productType", "")
+#     domain_prompt = get_domain_prompt(industry, product_type)
 
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
-    file.save(filepath)
+#     filepath = os.path.join(UPLOAD_FOLDER, filename)
+#     file.save(filepath)
 
-    ext = os.path.splitext(filename)[1].lower()
-    print(f"\n📂 Received file: {filename} ({ext})")
+#     ext = os.path.splitext(filename)[1].lower()
+#     print(f"\n📂 Received file: {filename} ({ext})")
 
-    try:
-        # ✅ Excel Processing
-        if ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(filepath)
+#     try:
+#         # ✅ Excel Processing
+#         if ext in [".xlsx", ".xls"]:
+#             df = pd.read_excel(filepath)
 
-            if "SKU_Description" not in df.columns:
-                return jsonify({"error": "Missing 'SKU_Description' column in Excel."}), 400
+#             if "SKU_Description" not in df.columns:
+#                 return jsonify({"error": "Missing 'SKU_Description' column in Excel."}), 400
 
-            total_rows = len(df)
-            print(f"🚀 Processing {total_rows} SKU rows using LLaMA...\n")
+#             total_rows = len(df)
+#             print(f"🚀 Processing {total_rows} SKU rows using LLaMA...\n")
 
-            attribute_map = {}
-            sku_matrix = []  # 🆕 For SKU-level matrix
+#             attribute_map = {}
+#             sku_matrix = []  # 🆕 For SKU-level matrix
 
-            for i, row in df.iterrows():
-                sku_text = str(row["SKU_Description"]).strip()
-                if not sku_text:
-                    continue
+#             for i, row in df.iterrows():
+#                 sku_text = str(row["SKU_Description"]).strip()
+#                 if not sku_text:
+#                     continue
 
-                print(f"🧠 Processing row {i + 1}/{total_rows}: {sku_text[:100]}...")
-                extracted_pairs = process_excel_row_with_llama(sku_text, domain_prompt)
+#                 print(f"🧠 Processing row {i + 1}/{total_rows}: {sku_text[:100]}...")
+#                 extracted_pairs = process_excel_row_with_llama(sku_text, domain_prompt)
 
-                # 🧩 Store SKU-level data
-                sku_matrix.append({
-                    "sku": sku_text,
-                    "attributes": extracted_pairs
-                })
+#                 # 🧩 Store SKU-level data
+#                 sku_matrix.append({
+#                     "sku": sku_text,
+#                     "attributes": extracted_pairs
+#                 })
 
-                # 🧩 Build aggregated attribute map
-                for attr, val in extracted_pairs:
-                    if attr not in attribute_map:
-                        attribute_map[attr] = set()
-                    for v in str(val).split(","):
-                        clean_val = v.strip()
-                        if clean_val:
-                            attribute_map[attr].add(clean_val)
+#                 # 🧩 Build aggregated attribute map
+#                 for attr, val in extracted_pairs:
+#                     if attr not in attribute_map:
+#                         attribute_map[attr] = set()
+#                     for v in str(val).split(","):
+#                         clean_val = v.strip()
+#                         if clean_val:
+#                             attribute_map[attr].add(clean_val)
 
-            # 🧮 Build Aggregated Matrix
-            max_values = max(len(vals) for vals in attribute_map.values()) if attribute_map else 0
-            columns = ["Attribute"] + [f"Value{i + 1}" for i in range(max_values)]
+#             # 🧮 Build Aggregated Matrix
+#             max_values = max(len(vals) for vals in attribute_map.values()) if attribute_map else 0
+#             columns = ["Attribute"] + [f"Value{i + 1}" for i in range(max_values)]
 
-            rows = []
-            for attr, vals in attribute_map.items():
-                val_list = list(vals)
-                val_list += [""] * (max_values - len(val_list))
-                rows.append([attr] + val_list)
+#             rows = []
+#             for attr, vals in attribute_map.items():
+#                 val_list = list(vals)
+#                 val_list += [""] * (max_values - len(val_list))
+#                 rows.append([attr] + val_list)
 
-            print("\n✅ Row-by-row Excel processing complete with multi-value support.\n")
+#             print("\n✅ Row-by-row Excel processing complete with multi-value support.\n")
 
-            # 🕸️ Push extracted attributes to Neo4j Knowledge Graph (optional)
-           # 🕸️ Push extracted attributes to Neo4j Knowledge Graph (optional)
-            try:
-                print("📡 Connecting to Neo4j for Knowledge Graph update...")
-                neo = Neo4jBuilder()
+#             # 🕸️ Push extracted attributes to Neo4j Knowledge Graph (optional)
+#            # 🕸️ Push extracted attributes to Neo4j Knowledge Graph (optional)
+#             try:
+#                 print("📡 Connecting to Neo4j for Knowledge Graph update...")
+#                 neo = Neo4jBuilder()
 
-                 # 🧹 Clear any previous data before inserting the new session
-                neo.clear_database()
-                print("🧹 Cleared old data from Neo4j (session-only mode).")
-                neo.add_attribute_value_pairs(attribute_map)
-                neo.close()
-                print("✅ Knowledge Graph successfully updated.\n")
-            except Exception as graph_error:
-                print(f"⚠️ Neo4j update skipped due to error: {graph_error}")
+#                  # 🧹 Clear any previous data before inserting the new session
+#                 neo.clear_database()
+#                 print("🧹 Cleared old data from Neo4j (session-only mode).")
+#                 neo.add_attribute_value_pairs(attribute_map)
+#                 neo.close()
+#                 print("✅ Knowledge Graph successfully updated.\n")
+#             except Exception as graph_error:
+#                 print(f"⚠️ Neo4j update skipped due to error: {graph_error}")
 
-            # --- Generate configuration rules from sku_matrix (backend)
-            try:
-                print("🧾 Generating configuration rules from SKU matrix...")
-                LAST_SKU_MATRIX = sku_matrix
-                rule_res = generate_rules_from_sku_matrix(
-                    sku_matrix,
-                    min_confidence=0.85,
-                    min_row_count=3,
-                    min_support_pct=0.0,
-                    max_examples=5,
-                    persist_json=False
-                )
-                LAST_RULESET = rule_res
-                print(f"✅ Generated {len(rule_res.get('rules', []))} rules.")
-            except Exception as re_err:
-                print(f"⚠️ Rule generation failed: {re_err}")
-                LAST_RULESET = {"rules": [], "generated_at": datetime.utcnow().isoformat() + "Z"}
+#             # --- Generate configuration rules from sku_matrix (backend)
+#             try:
+#                 print("🧾 Generating configuration rules from SKU matrix...")
+#                 LAST_SKU_MATRIX = sku_matrix
+#                 rule_res = generate_rules_from_sku_matrix(
+#                     sku_matrix,
+#                     min_confidence=0.85,
+#                     min_row_count=3,
+#                     min_support_pct=0.0,
+#                     max_examples=5,
+#                     persist_json=False
+#                 )
+#                 LAST_RULESET = rule_res
+#                 print(f"✅ Generated {len(rule_res.get('rules', []))} rules.")
+#             except Exception as re_err:
+#                 print(f"⚠️ Rule generation failed: {re_err}")
+#                 LAST_RULESET = {"rules": [], "generated_at": datetime.utcnow().isoformat() + "Z"}
 
-            # ✅ Return both data types to frontend
-            return jsonify({
-                "sku_matrix": sku_matrix,  # Per-SKU extracted data
-                "aggregated_matrix": {     # Unique attribute-value pairs
-                    "columns": columns,
-                    "rows": rows
-                },
-                "rules": LAST_RULESET,
-                "model_used": "llama3",
-                "industry": industry,
-                "product_type": product_type
-            })
+#             # ✅ Return both data types to frontend
+#             return jsonify({
+#                 "sku_matrix": sku_matrix,  # Per-SKU extracted data
+#                 "aggregated_matrix": {     # Unique attribute-value pairs
+#                     "columns": columns,
+#                     "rows": rows
+#                 },
+#                 "rules": LAST_RULESET,
+#                 "model_used": "llama3",
+#                 "industry": industry,
+#                 "product_type": product_type
+#             })
 
 
-        elif ext == ".pdf":
-            print("🚀 Running Mistral + Normalizer extraction...\n")
-            result = process_pdf_with_mistral_normalizer(filepath, domain_prompt)
+#         elif ext == ".pdf":
+#             print("🚀 Running Mistral + Normalizer extraction...\n")
+#             result = process_pdf_with_mistral_normalizer(filepath, domain_prompt)
 
-            return jsonify({
-                "sku_matrix": [],
-                "aggregated_matrix": {
-                    "columns": result.get("columns", []),
-                    "rows": result.get("rows", [])
-                },
-                "model_used": "Mistral + Normalizer",
-                "industry": industry,
-                "product_type": product_type
-            })
+#             return jsonify({
+#                 "sku_matrix": [],
+#                 "aggregated_matrix": {
+#                     "columns": result.get("columns", []),
+#                     "rows": result.get("rows", [])
+#                 },
+#                 "model_used": "Mistral + Normalizer",
+#                 "industry": industry,
+#                 "product_type": product_type
+#             })
 
 
 
-        # else:
-        #     return jsonify({"error": f"Unsupported file type: {ext}"}), 400
+#         # else:
+#         #     return jsonify({"error": f"Unsupported file type: {ext}"}), 400
 
-    except Exception as e:
-        print(f"❌ Error during processing: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+#     except Exception as e:
+#         print(f"❌ Error during processing: {str(e)}")
+#         return jsonify({"error": str(e)}), 500
 
 
-def detect_refinement_intent(user_prompt: str):
-    if not user_prompt:
-        return "unknown"
-    p = user_prompt.lower()
-    if "rename" in p and "attribute" in p:
-        return "attribute"
-    if "rename" in p and "value" in p:
-        return "value"
-    if "under" in p or "in " in p or "inside" in p:
-        return "value"
-    return "attribute"
+# def detect_refinement_intent(user_prompt: str):
+#     if not user_prompt:
+#         return "unknown"
+#     p = user_prompt.lower()
+#     if "rename" in p and "attribute" in p:
+#         return "attribute"
+#     if "rename" in p and "value" in p:
+#         return "value"
+#     if "under" in p or "in " in p or "inside" in p:
+#         return "value"
+#     return "attribute"
 
-@app.route("/refine_graph", methods=["POST", "OPTIONS"])
-def refine_graph():
-    if request.method == "OPTIONS":
-        return jsonify({"status": "OK"}), 200
+# @app.route("/refine_graph", methods=["POST", "OPTIONS"])
+# def refine_graph():
+#     if request.method == "OPTIONS":
+#         return jsonify({"status": "OK"}), 200
 
-    try:
-        from graph.neo4j_builder import Neo4jBuilder
-        import re
+#     try:
+#         from graph.neo4j_builder import Neo4jBuilder
+#         import re
 
-        data = request.get_json()
-        attributes = data.get("attributes", [])
-        if isinstance(attributes, str):
-            attributes = [attributes]
-
-        prompt = data.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt missing"}), 400
-
-        neo = Neo4jBuilder()
-
-        # --- Step 1: Get existing attributes ---
-        with neo.driver.session() as session:
-            res = session.run("MATCH (a:Attribute) RETURN a.name AS name")
-            all_attrs = [r["name"] for r in res]
-
-        print("📘 Attributes in graph:", all_attrs)
-        print("📥 Selected in UI:", attributes)
-        print("🧠 Prompt:", prompt)
-
-        # --- Step 2: Split into clear atomic commands ---
-        # Split prompt into clauses safely at 'and', 'then', ',' or '.'
-        raw_actions = re.split(r"\s*(?:and|then|,|\.)\s*", prompt, flags=re.IGNORECASE)
-        raw_actions = [a.strip() for a in raw_actions if a.strip()]
-        print(f"🧩 Split atomic actions: {raw_actions}")
-
-        performed_actions = []
-
-        # --- Step 3: Process each atomic action sequentially ---
-        for act in raw_actions:
-            act_low = act.lower()
-
-            # ✅ RENAME ATTRIBUTE
-            if act_low.startswith("rename attribute"):
-                m = re.match(
-                    r"rename\s+attribute\s+([\w\s\-]+?)\s+to\s+([\w\s\-]+)",
-                    act, re.IGNORECASE
-                )
-                if m:
-                    old_attr, new_attr = m.groups()
-                    neo.rename_attribute(old_attr.strip(), new_attr.strip())
-                    performed_actions.append(f"Renamed attribute '{old_attr}' → '{new_attr}'")
-
-            # ✅ RENAME VALUE
-            elif act_low.startswith("rename value"):
-                m = re.match(
-                    r"rename\s+value\s+([\w\s\-]+?)\s+to\s+([\w\s\-]+)",
-                    act, re.IGNORECASE
-                )
-                if m:
-                    old_val, new_val = m.groups()
-                    for attribute in attributes:
-                        values = neo.get_values(attribute)
-                        if any(v.lower() == old_val.lower() for v in values):
-                            neo.rename_value(attribute, old_val, new_val)
-                            performed_actions.append(f"Renamed value '{old_val}' → '{new_val}' under '{attribute}'")
-
-            # ✅ GENERIC RENAME (rename from X to Y)
-            elif act_low.startswith("rename from"):
-                m = re.match(
-                    r"rename\s+from\s+([\w\s\-]+?)\s+to\s+([\w\s\-]+)",
-                    act, re.IGNORECASE
-                )
-                if m:
-                    old, new = m.groups()
-                    if old.lower() in [a.lower() for a in all_attrs]:
-                        neo.rename_attribute(old.strip(), new.strip())
-                        performed_actions.append(f"Renamed attribute '{old}' → '{new}' (generic)")
-                    else:
-                        for attribute in attributes:
-                            values = neo.get_values(attribute)
-                            if any(v.lower() == old.lower() for v in values):
-                                neo.rename_value(attribute, old, new)
-                                performed_actions.append(f"Renamed value '{old}' → '{new}' under '{attribute}' (generic)")
-
-            # ✅ ADD VALUE
-            elif act_low.startswith("add value"):
-                m = re.match(
-                    r"add\s+value\s+([\w\s\-]+?)\s+under\s+([\w\s\-]+)",
-                    act, re.IGNORECASE
-                )
-                if m:
-                    val, attr = m.groups()
-                    neo.add_value(attr.strip(), val.strip())
-                    performed_actions.append(f"Added value '{val}' under '{attr}'")
-
-            # ✅ REMOVE VALUE
-            elif act_low.startswith("remove value"):
-                m = re.match(
-                    r"remove\s+value\s+([\w\s\-]+?)\s+under\s+([\w\s\-]+)",
-                    act, re.IGNORECASE
-                )
-                if m:
-                    val, attr = m.groups()
-                    neo.remove_value(attr.strip(), val.strip())
-                    performed_actions.append(f"Removed value '{val}' under '{attr}'")
-
-            # ✅ DELETE ATTRIBUTE
-            elif act_low.startswith("delete attribute"):
-                m = re.match(
-                    r"delete\s+attribute\s+([\w\s\-]+)",
-                    act, re.IGNORECASE
-                )
-                if m:
-                    attr = m.group(1)
-                    neo.delete_attribute(attr.strip())
-                    performed_actions.append(f"Deleted attribute '{attr}'")
-
-        # --- Step 4: Refresh Graph Data ---
-        with neo.driver.session() as session:
-            result = session.run("""
-                MATCH (a:Attribute)-[:HAS_VALUE]->(v:Value)
-                RETURN a.name AS attribute, collect(v.value) AS values
-            """)
-            rows = [[r["attribute"]] + r["values"] for r in result]
-            max_len = max((len(r) - 1 for r in rows), default=0)
-            columns = ["Attribute"] + [f"Value{i+1}" for i in range(max_len)]
-
-        # After refine actions, recompute rules (because attributes/values changed)
-        try:
-            print("🔁 Recomputing configuration rules after refinement...")
-            if LAST_SKU_MATRIX:
-                LAST_RULESET = generate_rules_from_sku_matrix(
-                    LAST_SKU_MATRIX,
-                    min_confidence=0.85,
-                    min_row_count=3,
-                    min_support_pct=0.0,
-                    max_examples=5,
-                    persist_json=False
-                )
-                print(f"✅ Recomputed {len(LAST_RULESET.get('rules', []))} rules.")
-            else:
-                print("⚠️ No SKU matrix available to recompute rules.")
-        except Exception as rr:
-            print(f"⚠️ Rule recompute after refine failed: {rr}")
-
-        neo.close()
-
-        return jsonify({
-            "status": "success",
-            "actions": performed_actions,
-            "updated_context": {"columns": columns, "rows": rows},
-            "rules": LAST_RULESET
-        }), 200
-
-    except Exception as e:
-        print(f"❌ Error in refine_graph: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/process_variant", methods=["POST"])
-def process_variant():
-    try:
-        file = request.files.get("file")
-        if not file:
-            return jsonify({"success": False, "error": "No file uploaded."}), 400
-
-        input_path = os.path.join(UPLOAD_DIR, file.filename)
-        file.save(input_path)
-        output_path = run_variant_analysis(input_path, OUTPUT_DIR)
-
-        return jsonify({"success": True, "filename": os.path.basename(output_path)})
-
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/download/<filename>", methods=["GET"])
-def download_file(filename):
-    path = os.path.join(OUTPUT_DIR, filename)
-    if not os.path.exists(path):
-        return jsonify({"error": "File not found"}), 404
-    return send_file(path, as_attachment=True)
-
-
-@app.route("/compare/ui_vs_graph", methods=["POST"])
-def compare_ui_vs_graph():
-    try:
-        from graph.neo4j_builder import Neo4jBuilder
-        ui_attrs = set(request.json.get("attributes", []))
-        neo = Neo4jBuilder()
-
-        with neo.driver.session() as session:
-            res = session.run("MATCH (a:Attribute) RETURN a.name AS attr")
-            graph_attrs = {r["attr"] for r in res}
-
-        neo.close()
-
-        missing_in_graph = sorted(ui_attrs - graph_attrs)
-        extra_in_graph = sorted(graph_attrs - ui_attrs)
-
-        return jsonify({
-            "ui_count": len(ui_attrs),
-            "graph_count": len(graph_attrs),
-            "missing_in_graph": missing_in_graph,
-            "extra_in_graph": extra_in_graph
-        })
-
-    except Exception as e:
-        print(f"❌ Comparison error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/graph/aggregated", methods=["GET"])
-def get_aggregated_from_graph():
-    try:
-        from graph.neo4j_builder import Neo4jBuilder
-        neo = Neo4jBuilder()
-
-        with neo.driver.session() as session:
-            result = session.run("""
-                MATCH (a:Attribute)-[:HAS_VALUE]->(v:Value)
-                RETURN a.name AS attribute, collect(v.value) AS values
-            """)
-
-            rows = []
-            attribute_map = {}
-            for record in result:
-                attribute = record["attribute"]
-                values = record["values"]
-                attribute_map[attribute] = values
-                rows.append([attribute] + values)
-
-            max_len = max((len(v) for v in attribute_map.values()), default=0)
-            columns = ["Attribute"] + [f"Value{i+1}" for i in range(max_len)]
-
-        neo.close()
-        return jsonify({"columns": columns, "rows": rows}), 200
-
-    except Exception as e:
-        print(f"❌ Error fetching graph data: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# ---------------------------
-# Rules API Endpoints (new)
-# ---------------------------
-
-@app.route("/rules/configuration", methods=["GET"])
-def get_configuration_rules():
-    global LAST_RULESET, LAST_SKU_MATRIX
-    try:
-        if not LAST_RULESET:
-            if LAST_SKU_MATRIX:
-                LAST_RULESET = generate_rules_from_sku_matrix(LAST_SKU_MATRIX)
-            else:
-                return jsonify({"rules": [], "message": "No SKU data available to generate rules."}), 200
-
-        return jsonify(LAST_RULESET), 200
-
-    except Exception as e:
-        print(f"❌ Error fetching rules: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/rules/recompute", methods=["POST"])
-def recompute_rules():
-    global LAST_RULESET, LAST_SKU_MATRIX
-    try:
-        payload = request.get_json(silent=True) or {}
-        sku_matrix = payload.get("sku_matrix") or LAST_SKU_MATRIX
-        if not sku_matrix:
-            return jsonify({"error": "No sku_matrix provided and no previous data available."}), 400
-
-        min_confidence = float(payload.get("min_confidence", 0.85))
-        min_row_count = int(payload.get("min_row_count", 3))
-        min_support_pct = float(payload.get("min_support_pct", 0.0))
-        max_examples = int(payload.get("max_examples", 5))
-        persist_json = bool(payload.get("persist_json", False))
-
-        rule_res = generate_rules_from_sku_matrix(
-            sku_matrix,
-            min_confidence=min_confidence,
-            min_row_count=min_row_count,
-            min_support_pct=min_support_pct,
-            max_examples=max_examples,
-            persist_json=persist_json
-        )
-        LAST_SKU_MATRIX = sku_matrix
-
-        LAST_RULESET = rule_res
-
-        return jsonify(rule_res), 200
-
-    except Exception as e:
-        print(f"❌ Error recomputing rules: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/rules/<rule_id>/preview", methods=["GET"])
-def preview_rule(rule_id):
-    global LAST_RULESET
-    try:
-        if not LAST_RULESET:
-            return jsonify({"error": "No rules available"}), 404
-        found = next((r for r in LAST_RULESET.get("rules", []) if r["id"] == rule_id), None)
-        if not found:
-            return jsonify({"error": "Rule not found"}), 404
-        return jsonify({"examples": found.get("examples", []), "rule": found}), 200
-    except Exception as e:
-        print(f"❌ Error previewing rule: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/graph/rebuild_sku_matrix", methods=["GET"])
-def rebuild_sku_matrix_from_graph():
-    """
-    Rebuilds SKU matrix from Neo4j:
-    ONE SKU → ALL ATTRIBUTES → ALL VALUES
-    """
-    try:
-        from graph.neo4j_builder import Neo4jBuilder
-        neo = Neo4jBuilder()
-
-        with neo.driver.session() as session:
-            result = session.run("""
-                MATCH (a:Attribute)-[:HAS_VALUE]->(v:Value)
-                RETURN a.name AS attribute, collect(v.value) AS values
-            """)
-
-            sku_matrix = []
-
-            # Build one combined SKU row
-            attributes = []
-            for record in result:
-                attributes.append([record["attribute"], ", ".join(record["values"])])
-
-            sku_matrix.append({
-                "sku": "CLEANED-SKU",
-                "attributes": attributes
-            })
-
-        neo.close()
-        return jsonify({ "sku_matrix": sku_matrix })
-
-    except Exception as e:
-        print("Error rebuilding sku matrix:", e)
-        return jsonify({"error": str(e)}), 500
-
-
-
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+#         data = request.get_json()
+#         attributes = data.get("attributes", [])
+#         if isinstance(attributes, str):
+#             attributes = [attributes]
+
+#         prompt = data.get("prompt", "").strip()
+#         if not prompt:
+#             return jsonify({"error": "Prompt missing"}), 400
+
+#         neo = Neo4jBuilder()
+
+#         # --- Step 1: Get existing attributes ---
+#         with neo.driver.session() as session:
+#             res = session.run("MATCH (a:Attribute) RETURN a.name AS name")
+#             all_attrs = [r["name"] for r in res]
+
+#         print("📘 Attributes in graph:", all_attrs)
+#         print("📥 Selected in UI:", attributes)
+#         print("🧠 Prompt:", prompt)
+
+#         # --- Step 2: Split into clear atomic commands ---
+#         # Split prompt into clauses safely at 'and', 'then', ',' or '.'
+#         raw_actions = re.split(r"\s*(?:and|then|,|\.)\s*", prompt, flags=re.IGNORECASE)
+#         raw_actions = [a.strip() for a in raw_actions if a.strip()]
+#         print(f"🧩 Split atomic actions: {raw_actions}")
+
+#         performed_actions = []
+
+#         # --- Step 3: Process each atomic action sequentially ---
+#         for act in raw_actions:
+#             act_low = act.lower()
+
+#             # ✅ RENAME ATTRIBUTE
+#             if act_low.startswith("rename attribute"):
+#                 m = re.match(
+#                     r"rename\s+attribute\s+([\w\s\-]+?)\s+to\s+([\w\s\-]+)",
+#                     act, re.IGNORECASE
+#                 )
+#                 if m:
+#                     old_attr, new_attr = m.groups()
+#                     neo.rename_attribute(old_attr.strip(), new_attr.strip())
+#                     performed_actions.append(f"Renamed attribute '{old_attr}' → '{new_attr}'")
+
+#             # ✅ RENAME VALUE
+#             elif act_low.startswith("rename value"):
+#                 m = re.match(
+#                     r"rename\s+value\s+([\w\s\-]+?)\s+to\s+([\w\s\-]+)",
+#                     act, re.IGNORECASE
+#                 )
+#                 if m:
+#                     old_val, new_val = m.groups()
+#                     for attribute in attributes:
+#                         values = neo.get_values(attribute)
+#                         if any(v.lower() == old_val.lower() for v in values):
+#                             neo.rename_value(attribute, old_val, new_val)
+#                             performed_actions.append(f"Renamed value '{old_val}' → '{new_val}' under '{attribute}'")
+
+#             # ✅ GENERIC RENAME (rename from X to Y)
+#             elif act_low.startswith("rename from"):
+#                 m = re.match(
+#                     r"rename\s+from\s+([\w\s\-]+?)\s+to\s+([\w\s\-]+)",
+#                     act, re.IGNORECASE
+#                 )
+#                 if m:
+#                     old, new = m.groups()
+#                     if old.lower() in [a.lower() for a in all_attrs]:
+#                         neo.rename_attribute(old.strip(), new.strip())
+#                         performed_actions.append(f"Renamed attribute '{old}' → '{new}' (generic)")
+#                     else:
+#                         for attribute in attributes:
+#                             values = neo.get_values(attribute)
+#                             if any(v.lower() == old.lower() for v in values):
+#                                 neo.rename_value(attribute, old, new)
+#                                 performed_actions.append(f"Renamed value '{old}' → '{new}' under '{attribute}' (generic)")
+
+#             # ✅ ADD VALUE
+#             elif act_low.startswith("add value"):
+#                 m = re.match(
+#                     r"add\s+value\s+([\w\s\-]+?)\s+under\s+([\w\s\-]+)",
+#                     act, re.IGNORECASE
+#                 )
+#                 if m:
+#                     val, attr = m.groups()
+#                     neo.add_value(attr.strip(), val.strip())
+#                     performed_actions.append(f"Added value '{val}' under '{attr}'")
+
+#             # ✅ REMOVE VALUE
+#             elif act_low.startswith("remove value"):
+#                 m = re.match(
+#                     r"remove\s+value\s+([\w\s\-]+?)\s+under\s+([\w\s\-]+)",
+#                     act, re.IGNORECASE
+#                 )
+#                 if m:
+#                     val, attr = m.groups()
+#                     neo.remove_value(attr.strip(), val.strip())
+#                     performed_actions.append(f"Removed value '{val}' under '{attr}'")
+
+#             # ✅ DELETE ATTRIBUTE
+#             elif act_low.startswith("delete attribute"):
+#                 m = re.match(
+#                     r"delete\s+attribute\s+([\w\s\-]+)",
+#                     act, re.IGNORECASE
+#                 )
+#                 if m:
+#                     attr = m.group(1)
+#                     neo.delete_attribute(attr.strip())
+#                     performed_actions.append(f"Deleted attribute '{attr}'")
+
+#         # --- Step 4: Refresh Graph Data ---
+#         with neo.driver.session() as session:
+#             result = session.run("""
+#                 MATCH (a:Attribute)-[:HAS_VALUE]->(v:Value)
+#                 RETURN a.name AS attribute, collect(v.value) AS values
+#             """)
+#             rows = [[r["attribute"]] + r["values"] for r in result]
+#             max_len = max((len(r) - 1 for r in rows), default=0)
+#             columns = ["Attribute"] + [f"Value{i+1}" for i in range(max_len)]
+
+#         # After refine actions, recompute rules (because attributes/values changed)
+#         try:
+#             print("🔁 Recomputing configuration rules after refinement...")
+#             if LAST_SKU_MATRIX:
+#                 LAST_RULESET = generate_rules_from_sku_matrix(
+#                     LAST_SKU_MATRIX,
+#                     min_confidence=0.85,
+#                     min_row_count=3,
+#                     min_support_pct=0.0,
+#                     max_examples=5,
+#                     persist_json=False
+#                 )
+#                 print(f"✅ Recomputed {len(LAST_RULESET.get('rules', []))} rules.")
+#             else:
+#                 print("⚠️ No SKU matrix available to recompute rules.")
+#         except Exception as rr:
+#             print(f"⚠️ Rule recompute after refine failed: {rr}")
+
+#         neo.close()
+
+#         return jsonify({
+#             "status": "success",
+#             "actions": performed_actions,
+#             "updated_context": {"columns": columns, "rows": rows},
+#             "rules": LAST_RULESET
+#         }), 200
+
+#     except Exception as e:
+#         print(f"❌ Error in refine_graph: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @app.route("/process_variant", methods=["POST"])
+# def process_variant():
+#     try:
+#         file = request.files.get("file")
+#         if not file:
+#             return jsonify({"success": False, "error": "No file uploaded."}), 400
+
+#         input_path = os.path.join(UPLOAD_DIR, file.filename)
+#         file.save(input_path)
+#         output_path = run_variant_analysis(input_path, OUTPUT_DIR)
+
+#         return jsonify({"success": True, "filename": os.path.basename(output_path)})
+
+#     except Exception as e:
+#         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# @app.route("/download/<filename>", methods=["GET"])
+# def download_file(filename):
+#     path = os.path.join(OUTPUT_DIR, filename)
+#     if not os.path.exists(path):
+#         return jsonify({"error": "File not found"}), 404
+#     return send_file(path, as_attachment=True)
+
+
+# @app.route("/compare/ui_vs_graph", methods=["POST"])
+# def compare_ui_vs_graph():
+#     try:
+#         from graph.neo4j_builder import Neo4jBuilder
+#         ui_attrs = set(request.json.get("attributes", []))
+#         neo = Neo4jBuilder()
+
+#         with neo.driver.session() as session:
+#             res = session.run("MATCH (a:Attribute) RETURN a.name AS attr")
+#             graph_attrs = {r["attr"] for r in res}
+
+#         neo.close()
+
+#         missing_in_graph = sorted(ui_attrs - graph_attrs)
+#         extra_in_graph = sorted(graph_attrs - ui_attrs)
+
+#         return jsonify({
+#             "ui_count": len(ui_attrs),
+#             "graph_count": len(graph_attrs),
+#             "missing_in_graph": missing_in_graph,
+#             "extra_in_graph": extra_in_graph
+#         })
+
+#     except Exception as e:
+#         print(f"❌ Comparison error: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @app.route("/graph/aggregated", methods=["GET"])
+# def get_aggregated_from_graph():
+#     try:
+#         from graph.neo4j_builder import Neo4jBuilder
+#         neo = Neo4jBuilder()
+
+#         with neo.driver.session() as session:
+#             result = session.run("""
+#                 MATCH (a:Attribute)-[:HAS_VALUE]->(v:Value)
+#                 RETURN a.name AS attribute, collect(v.value) AS values
+#             """)
+
+#             rows = []
+#             attribute_map = {}
+#             for record in result:
+#                 attribute = record["attribute"]
+#                 values = record["values"]
+#                 attribute_map[attribute] = values
+#                 rows.append([attribute] + values)
+
+#             max_len = max((len(v) for v in attribute_map.values()), default=0)
+#             columns = ["Attribute"] + [f"Value{i+1}" for i in range(max_len)]
+
+#         neo.close()
+#         return jsonify({"columns": columns, "rows": rows}), 200
+
+#     except Exception as e:
+#         print(f"❌ Error fetching graph data: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# # ---------------------------
+# # Rules API Endpoints (new)
+# # ---------------------------
+
+# @app.route("/rules/configuration", methods=["GET"])
+# def get_configuration_rules():
+#     global LAST_RULESET, LAST_SKU_MATRIX
+#     try:
+#         if not LAST_RULESET:
+#             if LAST_SKU_MATRIX:
+#                 LAST_RULESET = generate_rules_from_sku_matrix(LAST_SKU_MATRIX)
+#             else:
+#                 return jsonify({"rules": [], "message": "No SKU data available to generate rules."}), 200
+
+#         return jsonify(LAST_RULESET), 200
+
+#     except Exception as e:
+#         print(f"❌ Error fetching rules: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @app.route("/rules/recompute", methods=["POST"])
+# def recompute_rules():
+#     global LAST_RULESET, LAST_SKU_MATRIX
+#     try:
+#         payload = request.get_json(silent=True) or {}
+#         sku_matrix = payload.get("sku_matrix") or LAST_SKU_MATRIX
+#         if not sku_matrix:
+#             return jsonify({"error": "No sku_matrix provided and no previous data available."}), 400
+
+#         min_confidence = float(payload.get("min_confidence", 0.85))
+#         min_row_count = int(payload.get("min_row_count", 3))
+#         min_support_pct = float(payload.get("min_support_pct", 0.0))
+#         max_examples = int(payload.get("max_examples", 5))
+#         persist_json = bool(payload.get("persist_json", False))
+
+#         rule_res = generate_rules_from_sku_matrix(
+#             sku_matrix,
+#             min_confidence=min_confidence,
+#             min_row_count=min_row_count,
+#             min_support_pct=min_support_pct,
+#             max_examples=max_examples,
+#             persist_json=persist_json
+#         )
+#         LAST_SKU_MATRIX = sku_matrix
+
+#         LAST_RULESET = rule_res
+
+#         return jsonify(rule_res), 200
+
+#     except Exception as e:
+#         print(f"❌ Error recomputing rules: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @app.route("/rules/<rule_id>/preview", methods=["GET"])
+# def preview_rule(rule_id):
+#     global LAST_RULESET
+#     try:
+#         if not LAST_RULESET:
+#             return jsonify({"error": "No rules available"}), 404
+#         found = next((r for r in LAST_RULESET.get("rules", []) if r["id"] == rule_id), None)
+#         if not found:
+#             return jsonify({"error": "Rule not found"}), 404
+#         return jsonify({"examples": found.get("examples", []), "rule": found}), 200
+#     except Exception as e:
+#         print(f"❌ Error previewing rule: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @app.route("/graph/rebuild_sku_matrix", methods=["GET"])
+# def rebuild_sku_matrix_from_graph():
+#     """
+#     Rebuilds SKU matrix from Neo4j:
+#     ONE SKU → ALL ATTRIBUTES → ALL VALUES
+#     """
+#     try:
+#         from graph.neo4j_builder import Neo4jBuilder
+#         neo = Neo4jBuilder()
+
+#         with neo.driver.session() as session:
+#             result = session.run("""
+#                 MATCH (a:Attribute)-[:HAS_VALUE]->(v:Value)
+#                 RETURN a.name AS attribute, collect(v.value) AS values
+#             """)
+
+#             sku_matrix = []
+
+#             # Build one combined SKU row
+#             attributes = []
+#             for record in result:
+#                 attributes.append([record["attribute"], ", ".join(record["values"])])
+
+#             sku_matrix.append({
+#                 "sku": "CLEANED-SKU",
+#                 "attributes": attributes
+#             })
+
+#         neo.close()
+#         return jsonify({ "sku_matrix": sku_matrix })
+
+#     except Exception as e:
+#         print("Error rebuilding sku matrix:", e)
+#         return jsonify({"error": str(e)}), 500
+
+
+
+# if __name__ == "__main__":
+#     app.run(debug=True, port=5000)
 
 
 
